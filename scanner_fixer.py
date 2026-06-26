@@ -16,48 +16,144 @@ from pathlib import Path
 
 
 # ─────────────────────────────────────────
-#  خوارزميات المعالجة
+#  خوارزميات المعالجة  (v3 — محسّن)
 # ─────────────────────────────────────────
 
-def detect_skew_angle(image: np.ndarray) -> float:
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+# ثوابت جودة المعالجة المسبقة
+_CANNY_LOW_RATIO  = 0.4   # نسبة العتبة الدنيا من العلوية
+_MIN_TEXT_PIXELS  = 50    # أقل عدد بكسلات نصية لتفعيل minAreaRect
+_MERGE_AGREE_TH  = 5.0   # عتبة الاتفاق بين الطريقتين (درجات)
 
-    # الطريقة 1: minAreaRect
+
+def _normalize_rect_angle(angle: float, w: float, h: float) -> float:
+    """تحويل زاوية minAreaRect (-90,0] إلى زاوية تصحيح صحيحة في (-45,45].
+
+    OpenCV يُرجع الزاوية دائماً في النطاق [-90, 0) حيث:
+      - المحور الأطول يكون أفقي دائماً
+      - الزاوية السالبة = دوران عكس عقارب الساعة
+
+    الإصلاح:
+      1. إذا العرض < الطول (المستطيل عمودي) أضف 90°
+      2. حول للنطاق (-90,90) ثم أضف/اطرح 180 لإبقائها في (-45,45]
+    """
+    if w < h:
+        angle += 90.0
+    # ضمان النطاق (-90, 90]
+    angle = ((angle + 90) % 180) - 90
+    return angle
+
+
+def _detect_minarect(gray: np.ndarray) -> tuple:
+    """طريقة 1: minAreaRect — ممتازة للنصوص الكثيفة.
+
+    تُرجع (زاوية، ثقة 0-1). الثقة تعتمد على كثافة البكسلات النصية.
+    """
     _, binary = cv2.threshold(gray, 0, 255,
                               cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     coords = np.column_stack(np.where(binary > 0))
-    angle_rect = 0.0
-    if len(coords) >= 20:
-        rect = cv2.minAreaRect(coords)
-        (_, _), (w, h), angle = rect
-        if w < h:
-            angle += 90.0
-        angle_rect = angle % 90
-        if angle_rect > 45:
-            angle_rect -= 90
+    if len(coords) < _MIN_TEXT_PIXELS:
+        return 0.0, 0.0
 
-    # الطريقة 2: HoughLines
+    rect = cv2.minAreaRect(coords)
+    (_, _), (w, h), angle = rect
+    corrected = _normalize_rect_angle(angle, w, h)
+
+    # الثقة: نسبة البكسلات النصية من إجمالي الصورة
+    text_ratio = len(coords) / gray.size
+    confidence = min(1.0, text_ratio * 15)  # نسبة عالية = ثقة عالية
+    return corrected, confidence
+
+
+def _detect_hough(gray: np.ndarray) -> tuple:
+    """طريقة 2: HoughLines — ممتازة للصفحات ذات الحواف الواضحة.
+
+    تُرجع (زاوية، ثقة 0-1). الخطوط الأطول تُweighted أعلى.
+    العتبات ديناميكية بناءً على تباين الصورة.
+    """
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(blurred, 30, 120, apertureSize=3)
-    lines = cv2.HoughLines(edges, 1, np.pi / 180, threshold=100)
-    angle_hough = 0.0
-    if lines is not None:
-        angles = []
-        for line in lines[:50]:
-            rho, theta = line[0]
-            a = np.degrees(theta) - 90
-            if abs(a) < 45:
-                angles.append(a)
-        if angles:
-            angle_hough = float(np.median(angles))
 
-    if abs(angle_rect - angle_hough) < 5:
-        return (angle_rect + angle_hough) / 2
-    return angle_rect
+    # عتبات Canny ديناميكية بناءً على تباين الصورة
+    sigma = np.std(gray)
+    high = max(80, int(min(200, sigma * 0.5)))
+    low = max(30, int(high * _CANNY_LOW_RATIO))
+    edges = cv2.Canny(blurred, low, high, apertureSize=3)
+
+    lines = cv2.HoughLines(edges, 1, np.pi / 180, threshold=80)
+    if lines is None:
+        return 0.0, 0.0
+
+    # جمع الزوايا مع أوزان (عدد البكسلات في كل خط = الطول التقريبي)
+    weighted_angles = []
+    for line in lines[:80]:
+        rho, theta = line[0]
+        a = np.degrees(theta) - 90
+        if abs(a) < 45:
+            # الوزن = 1 (كل خط متساوٍ في Hough standard، لكن نستخدم
+            # قيمة rho المطلقة كوزن إضافي للخطوط الأقرب للأفقي)
+            weight = 1.0 / (1.0 + abs(rho) * 0.001)
+            weighted_angles.append((a, weight))
+
+    if not weighted_angles:
+        return 0.0, 0.0
+
+    # weighted median عبر التراكمي
+    angles_arr = np.array([a for a, _ in weighted_angles])
+    weights_arr = np.array([w for _, w in weighted_angles])
+    weights_arr /= weights_arr.sum()
+    sorted_idx = np.argsort(angles_arr)
+    cumsum = np.cumsum(weights_arr[sorted_idx])
+    median_idx = sorted_idx[np.searchsorted(cumsum, 0.5)]
+    angle_hough = float(angles_arr[median_idx])
+
+    # الثقة: تعتمد على عدد الخطوط واتفاقها
+    n_lines = len(weighted_angles)
+    if n_lines >= 10:
+        std = float(np.std(angles_arr))
+        confidence = min(1.0, max(0.0, 1.0 - std / 5.0))
+    else:
+        confidence = min(0.6, n_lines / 10.0)
+    return angle_hough, confidence
+
+
+def detect_skew_angle(image: np.ndarray) -> tuple:
+    """يكتشف زاوية الميلان بطريقتين ويختار الأدق.
+
+    تُرجع (زاوية_التصحيح، ثقة_0_إلى_1، الطريقة_المختارة).
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    angle_rect, conf_rect = _detect_minarect(gray)
+    angle_hough, conf_hough = _detect_hough(gray)
+
+    # لا يوجد كشف صالح من أي طريقة
+    if conf_rect < 0.01 and conf_hough < 0.01:
+        return 0.0, 0.0, "none"
+
+    # إذا إحدى الطريقتين لم تكتشف شيئاً (ثقة ≈ 0)، نأخذ الأخرى
+    if conf_rect < 0.01:
+        return angle_hough, conf_hough, "hough"
+    if conf_hough < 0.01:
+        return angle_rect, conf_rect, "minarect"
+
+    # الطريقتان أعطتا نتائج — هل تتفقان؟
+    diff = abs(angle_rect - angle_hough)
+    if diff < _MERGE_AGREE_TH:
+        # متفقان: المتوسط المرجح بالثقة
+        total_conf = conf_rect + conf_hough
+        w_rect = conf_rect / total_conf
+        w_hough = conf_hough / total_conf
+        merged = angle_rect * w_rect + angle_hough * w_hough
+        return merged, max(conf_rect, conf_hough), "merged"
+
+    # متعارضتان: نأخذ الأعلى ثقة
+    if conf_rect >= conf_hough:
+        return angle_rect, conf_rect, "minarect"
+    return angle_hough, conf_hough, "hough"
 
 
 def deskew(image: np.ndarray, angle: float) -> np.ndarray:
-    if abs(angle) < 0.1:
+    """يدور الصورة بالزاوية المعطاة مع خلفية بيضاء."""
+    if abs(angle) < 0.05:
         return image
     (h, w) = image.shape[:2]
     M = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1.0)
@@ -68,6 +164,7 @@ def deskew(image: np.ndarray, angle: float) -> np.ndarray:
 
 
 def auto_crop(image: np.ndarray, margin: int = 12) -> np.ndarray:
+    """يقص الحواف الفارغة ذكياً. يعمل مع أي خلفية فاتحة."""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     bg_val = np.percentile(gray, 95)
     threshold = max(220, bg_val - 15)
@@ -85,13 +182,29 @@ def auto_crop(image: np.ndarray, margin: int = 12) -> np.ndarray:
     return image[y0:y1 + 1, x0:x1 + 1]
 
 
-def process_single(image: np.ndarray, extra_angle: float = 0.0) -> tuple:
-    """المعالجة الكاملة. extra_angle = تصحيح يدوي إضافي."""
-    auto_angle = detect_skew_angle(image)
+def process_single(image: np.ndarray, extra_angle: float = 0.0,
+                   do_crop: bool = True,
+                   cached_auto: float = None) -> tuple:
+    """المعالجة الكاملة لصورة واحدة.
+
+    المعاملات:
+        extra_angle: تصحيح يدوي إضافي
+        do_crop: هل نقص الحواف؟
+        cached_auto: زاوية تلقائية مخزنة (لتجنب إعادة الحساب في السلايدر)
+
+    تُرجع (الصورة_النتيجة، الزاوية_التلقائية، الزاوية_الإجمالية، الثقة، طريقة_الكشف)
+    """
+    if cached_auto is not None:
+        auto_angle = cached_auto
+        confidence = 1.0
+        method = "cached"
+    else:
+        auto_angle, confidence, method = detect_skew_angle(image)
+
     total_angle = auto_angle + extra_angle
     rotated = deskew(image, total_angle)
-    cropped = auto_crop(rotated)
-    return cropped, auto_angle, total_angle
+    result = auto_crop(rotated) if do_crop else rotated
+    return result, auto_angle, total_angle, confidence, method
 
 
 # ─────────────────────────────────────────
@@ -133,6 +246,7 @@ class ScannerFixerApp:
         self.manual_angle     = tk.DoubleVar(value=0.0)
         self.do_crop          = tk.BooleanVar(value=True)
         self._slider_job      = None          # debounce timer
+        self._cached_auto_angle = None       # cache for slider performance
 
         self._build_ui()
         self._poll_queue()
@@ -247,7 +361,7 @@ class ScannerFixerApp:
 
         self.slider = tk.Scale(
             panel,
-            from_=-15, to=15,
+            from_=-30, to=30,
             resolution=0.5,
             orient=tk.HORIZONTAL,
             variable=self.manual_angle,
@@ -399,14 +513,14 @@ class ScannerFixerApp:
     def _on_slider(self, val=None):
         v = self.manual_angle.get()
         self.angle_display.config(text=f"{v:+.1f}°")
-        # debounce: انتظر 700ms بعد آخر حركة ثم طبّق
+        # debounce: انتظر 400ms بعد آخر حركة ثم طبّق
         if self._slider_job:
             self.root.after_cancel(self._slider_job)
-        self._slider_job = self.root.after(700, self._apply_manual)
+        self._slider_job = self.root.after(400, self._apply_manual)
 
     def _nudge(self, delta):
         cur = self.manual_angle.get()
-        new = max(-15, min(15, cur + delta))
+        new = max(-30, min(30, cur + delta))
         self.manual_angle.set(new)
         self._on_slider()
 
@@ -420,28 +534,39 @@ class ScannerFixerApp:
             self._apply_manual()
 
     def _apply_manual(self):
-        """يُطبّق التدوير الكلي (تلقائي + يدوي) ويعرض النتيجة فوراً."""
+        """يُطبّق التدوير الكلي (تلقائي + يدوي) ويعرض النتيجة فوراً.
+
+        يُخزّن الزاوية التلقائية عند أول كشف لتجنب إعادة الحساب
+        عند كل تحريك للسلايدر (تحسين الأداء).
+        """
         if self.cv_original is None:
             return
         extra = self.manual_angle.get()
-        result, auto_a, total_a = process_single(
-            self.cv_original.copy(), extra,
+        do_crop = self.do_crop.get()
+
+        # استخدم الزاوية المخزنة إن وُجدت (لتفادي إعادة الكشف)
+        cached = getattr(self, '_cached_auto_angle', None)
+        result, auto_a, total_a, conf, method = process_single(
+            self.cv_original.copy(), extra, do_crop,
+            cached_auto=cached,
         )
-        if not self.do_crop.get():
-            # تجاهل القص: نطبّق التدوير فقط
-            result = deskew(self.cv_original.copy(), total_a)
+        # خزّن الزاوية التلقائية عند أول كشف
+        if cached is None:
+            self._cached_auto_angle = auto_a
 
         self.cv_processed = result
         self._show_cv(result, self.lbl_proc)
         self.btns["btn_save"].config(state=tk.NORMAL)
 
-        # تحديث العلامات
+        # مؤشر الثقة بلون
+        conf_pct = int(conf * 100)
+        conf_icon = "🟢" if conf_pct >= 70 else ("🟡" if conf_pct >= 40 else "🔴")
         self.auto_angle_lbl.config(
-            text=f"الزاوية التلقائية: {auto_a:+.2f}°")
+            text=f"تلقائي: {auto_a:+.2f}° {conf_icon}{conf_pct}% [{method}]")
         self.total_angle_lbl.config(
-            text=f"الزاوية الإجمالية: {total_a:+.2f}°")
+            text=f"الإجمالي: {total_a:+.2f}°")
         self.angle_status.set(
-            f"تلقائي: {auto_a:+.2f}°   يدوي: {extra:+.1f}°   "
+            f"تلقائي: {auto_a:+.2f}° | يدوي: {extra:+.1f}° | "
             f"إجمالي: {total_a:+.2f}°")
 
     # ══════════════════════════════════════
@@ -465,6 +590,7 @@ class ScannerFixerApp:
         self.batch_folder = ""
         self.manual_angle.set(0.0)
         self.angle_display.config(text="0.0°")
+        self._cached_auto_angle = None
         self._show_cv(img, self.lbl_orig)
         self.lbl_proc.configure(image="", text="—\nبعد المعالجة", fg=TEXT_DIM)
         self.btns["btn_process"].config(state=tk.NORMAL)
@@ -498,25 +624,29 @@ class ScannerFixerApp:
 
     def _process_single_ui(self):
         self._set_status("جاري المعالجة…")
+        self._cached_auto_angle = None  # إعادة الكشف لكل صورة جديدة
         extra = self.manual_angle.get()
-        result, auto_a, total_a = process_single(
-            self.cv_original.copy(), extra)
-        if not self.do_crop.get():
-            result = deskew(self.cv_original.copy(), total_a)
+        do_crop = self.do_crop.get()
+        result, auto_a, total_a, conf, method = process_single(
+            self.cv_original.copy(), extra, do_crop)
+        self._cached_auto_angle = auto_a
         self.cv_processed = result
         self._show_cv(result, self.lbl_proc)
         self.btns["btn_save"].config(state=tk.NORMAL)
         h0, w0 = self.cv_original.shape[:2]
         h1, w1 = result.shape[:2]
+        conf_pct = int(conf * 100)
+        status_icon = "🟢" if conf_pct >= 70 else ("🟡" if conf_pct >= 40 else "🔴")
         self._log_row(os.path.basename(self.current_file),
                       auto_a, extra, total_a,
-                      f"{w0}×{h0}", f"{w1}×{h1}", "✓")
+                      f"{w0}×{h0}", f"{w1}×{h1}",
+                      f"✓ {conf_icon}{conf_pct}%")
         self.auto_angle_lbl.config(
-            text=f"الزاوية التلقائية: {auto_a:+.2f}°")
+            text=f"تلقائي: {auto_a:+.2f}° {conf_icon}{conf_pct}% [{method}]")
         self.total_angle_lbl.config(
-            text=f"الزاوية الإجمالية: {total_a:+.2f}°")
+            text=f"الإجمالي: {total_a:+.2f}°")
         self.angle_status.set(
-            f"تلقائي: {auto_a:+.2f}°   يدوي: {extra:+.1f}°   "
+            f"تلقائي: {auto_a:+.2f}° | يدوي: {extra:+.1f}° | "
             f"إجمالي: {total_a:+.2f}°")
         self._set_status("تمت المعالجة بنجاح")
 
@@ -556,16 +686,17 @@ class ScannerFixerApp:
                      "—", "—", "✗ خطأ"))
                 continue
             try:
-                result, auto_a, total_a = process_single(img, extra_angle)
-                if not do_crop:
-                    result = deskew(img.copy(), total_a)
+                result, auto_a, total_a, conf, method = process_single(
+                    img, extra_angle, do_crop)
                 out_path = os.path.join(out_dir, fname)
                 cv2.imwrite(out_path, result)
                 h0, w0 = img.shape[:2]
                 h1, w1 = result.shape[:2]
+                conf_pct = int(conf * 100)
                 self.msg_queue.put(
                     ("log", fname, auto_a, extra_angle, total_a,
-                     f"{w0}×{h0}", f"{w1}×{h1}", "✓"))
+                     f"{w0}×{h0}", f"{w1}×{h1}",
+                     f"✓ {conf_pct}%"))
                 self.msg_queue.put(("show_proc", result.copy()))
             except Exception as e:
                 self.msg_queue.put(
