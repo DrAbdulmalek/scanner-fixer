@@ -184,17 +184,23 @@ def auto_crop(image: np.ndarray, margin: int = 12) -> np.ndarray:
 
 def process_single(image: np.ndarray, extra_angle: float = 0.0,
                    do_crop: bool = True,
-                   cached_auto: float = None) -> tuple:
+                   cached_auto: float = None,
+                   ignore_auto: bool = False) -> tuple:
     """المعالجة الكاملة لصورة واحدة.
 
     المعاملات:
         extra_angle: تصحيح يدوي إضافي
         do_crop: هل نقص الحواف؟
         cached_auto: زاوية تلقائية مخزنة (لتجنب إعادة الحساب في السلايدر)
+        ignore_auto: تجاهل الكشف التلقائي واستخدم اليدوي فقط
 
     تُرجع (الصورة_النتيجة، الزاوية_التلقائية، الزاوية_الإجمالية، الثقة، طريقة_الكشف)
     """
-    if cached_auto is not None:
+    if ignore_auto:
+        auto_angle = 0.0
+        confidence = 0.0
+        method = "manual-only"
+    elif cached_auto is not None:
         auto_angle = cached_auto
         confidence = 1.0
         method = "cached"
@@ -245,6 +251,7 @@ class ScannerFixerApp:
         # متغيرات التحكم اليدوي
         self.manual_angle     = tk.DoubleVar(value=0.0)
         self.do_crop          = tk.BooleanVar(value=True)
+        self.ignore_auto       = tk.BooleanVar(value=False)
         self._slider_job      = None          # debounce timer
         self._cached_auto_angle = None       # cache for slider performance
 
@@ -420,6 +427,16 @@ class ScannerFixerApp:
             command=self._on_option_change,
         ).pack(anchor="w", padx=14, pady=(10, 4))
 
+        tk.Checkbutton(
+            panel, text="تجاهل الكشف التلقائي",
+            variable=self.ignore_auto,
+            bg=SLIDER_BG, fg=TEXT_LIGHT,
+            selectcolor=BORDER,
+            activebackground=SLIDER_BG,
+            font=("Arial", 9),
+            command=self._on_option_change,
+        ).pack(anchor="w", padx=14, pady=(4, 4))
+
         # ── تلميح ──
         section("💡 تلميح")
         tk.Label(panel,
@@ -543,12 +560,13 @@ class ScannerFixerApp:
             return
         extra = self.manual_angle.get()
         do_crop = self.do_crop.get()
+        ignore_auto = self.ignore_auto.get()
 
         # استخدم الزاوية المخزنة إن وُجدت (لتفادي إعادة الكشف)
         cached = getattr(self, '_cached_auto_angle', None)
         result, auto_a, total_a, conf, method = process_single(
             self.cv_original.copy(), extra, do_crop,
-            cached_auto=cached,
+            cached_auto=cached, ignore_auto=ignore_auto,
         )
         # خزّن الزاوية التلقائية عند أول كشف
         if cached is None:
@@ -627,8 +645,9 @@ class ScannerFixerApp:
         self._cached_auto_angle = None  # إعادة الكشف لكل صورة جديدة
         extra = self.manual_angle.get()
         do_crop = self.do_crop.get()
+        ignore_auto = self.ignore_auto.get()
         result, auto_a, total_a, conf, method = process_single(
-            self.cv_original.copy(), extra, do_crop)
+            self.cv_original.copy(), extra, do_crop, ignore_auto=ignore_auto)
         self._cached_auto_angle = auto_a
         self.cv_processed = result
         self._show_cv(result, self.lbl_proc)
@@ -661,11 +680,12 @@ class ScannerFixerApp:
         self.btns["btn_process"].config(state=tk.DISABLED)
         threading.Thread(
             target=self._batch_worker,
-            args=(self.batch_folder, extra, self.do_crop.get()),
+            args=(self.batch_folder, extra, self.do_crop.get(),
+                  self.ignore_auto.get()),
             daemon=True,
         ).start()
 
-    def _batch_worker(self, folder, extra_angle, do_crop):
+    def _batch_worker(self, folder, extra_angle, do_crop, ignore_auto=False):
         files = sorted([
             f for f in os.listdir(folder)
             if f.lower().endswith(
@@ -687,7 +707,7 @@ class ScannerFixerApp:
                 continue
             try:
                 result, auto_a, total_a, conf, method = process_single(
-                    img, extra_angle, do_crop)
+                    img, extra_angle, do_crop, ignore_auto=ignore_auto)
                 out_path = os.path.join(out_dir, fname)
                 cv2.imwrite(out_path, result)
                 h0, w0 = img.shape[:2]
