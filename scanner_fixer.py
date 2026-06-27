@@ -256,7 +256,19 @@ class ScannerFixerApp:
         self._cached_auto_angle = None       # cache for slider performance
 
         self._build_ui()
+        self._bind_shortcuts()
         self._poll_queue()
+
+    # ══════════════════════════════════════
+    #  اختصارات لوحة المفاتيح
+    # ══════════════════════════════════════
+
+    def _bind_shortcuts(self):
+        """اختصارات لوحة المفاتيح لتسريع العمل"""
+        self.root.bind('<Control-o>', lambda e: self._open_image())
+        self.root.bind('<Control-s>', lambda e: self._save_image())
+        self.root.bind('<Control-m>', lambda e: self._open_folder())
+        self.root.bind('<space>', lambda e: self._run_process())
 
     # ══════════════════════════════════════
     #  بناء الواجهة
