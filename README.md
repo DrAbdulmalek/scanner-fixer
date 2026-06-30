@@ -1,175 +1,117 @@
-<p align="center">
-  <img src="https://img.shields.io/badge/Python-3.9%2B-blue?style=flat-square&logo=python" alt="Python" />
-  <img src="https://img.shields.io/badge/OpenCV-4.8%2B-green?style=flat-square&logo=opencv" alt="OpenCV" />
-  <img src="https://img.shields.io/badge/License-MIT-yellow?style=flat-square" alt="MIT" />
-  <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey?style=flat-square" alt="Cross Platform" />
-</p>
+# scanner-fixer
 
-<h1 align="center">Scanner Fixer</h1>
+Pre-OCR image normalization for scanned documents.  
+Part of the **OmniMedical OCR Ecosystem**.
 
-<p align="center">
-  <strong>Dual-algorithm skew detection + auto-crop + manual adjustment + batch processing</strong><br/>
-  <span dir="rtl">مُصلح الصور الممسوحة — كشف ميلان ذكي + قص حواف تلقائي + تعديل يدوي + معالجة دفعية</span>
-</p>
+## What it does
 
----
+| Step | What | Why |
+|------|------|-----|
+| **Crop** | Removes dark scanner borders | Clean input for OCR |
+| **Rotate** | Detects and fixes 180° flips | Upside-down pages |
+| **Deskew** | Corrects small tilt angles | Scanner misalignment |
+| **Enhance** | CLAHE contrast + denoise + sharpen | Better OCR accuracy |
 
-## What It Does
-
-Scanner Fixer is a desktop GUI application that automatically detects and corrects skew (rotation) in scanned document images. It uses a **dual-algorithm approach** combining `minAreaRect` and `HoughLines` for robust angle detection, followed by intelligent auto-cropping with dynamic thresholding.
-
-### Key Features
-
-| Feature | Description |
-|---------|-------------|
-| **Dual Skew Detection** | Merges `minAreaRect` + `HoughLines` — averages when they agree, prefers `minAreaRect` on conflict |
-| **Dynamic Auto-Crop** | Threshold adapts to each image's actual brightness percentile — works with any scanner |
-| **Manual Angle Slider** | Fine-tune correction with -15 to +15 degree slider + 0.5 degree nudge buttons |
-| **Batch Processing** | Process entire folders with progress bar, threaded execution, and cancel support |
-| **Detailed Log** | Per-image table showing auto angle, manual adjustment, total angle, and size before/after |
-| **Dark Theme UI** | Modern dark interface with Catppuccin-inspired colors |
-| **Instant Preview** | Side-by-side original vs processed view with real-time slider updates |
-
-## Quick Start
+## Install
 
 ```bash
-# Clone the repository
-git clone https://github.com/DrAbdulmalek/scanner-fixer.git
-cd scanner-fixer
+pip install -e .
 
-# Install dependencies
-pip install -r requirements.txt
-
-# On Manjaro/Arch Linux if pip complains:
-pip install -r requirements.txt --break-system-packages
-
-# Run
-python3 scanner_fixer.py
-```
-
-## Algorithm Details
-
-### Skew Detection (Dual Method)
-
-The detector combines two complementary approaches:
-
-1. **minAreaRect** — Finds the minimum-area rotated rectangle enclosing all text pixels. Fast and accurate for documents with sufficient text content.
-
-2. **HoughLines** — Detects dominant line orientations via Hough transform. Robust against noise but can be affected by non-text elements.
-
-**Merging logic:**
-- If both methods agree within 5 degrees, the average is used (higher accuracy)
-- If they disagree, `minAreaRect` is preferred (more reliable for text-heavy documents)
-- Tested accuracy: 3.50 degrees detected vs 3.50 degrees actual
-
-### Auto-Crop (Dynamic Threshold)
-
-Instead of a fixed pixel threshold, the crop boundary is computed from the image's 95th brightness percentile:
-
-```python
-bg_val = np.percentile(gray, 95)
-threshold = max(220, bg_val - 15)  # Adaptive to scanner brightness
-```
-
-This ensures consistent border detection regardless of scanner settings, paper color, or image contrast.
-
-### Processing Pipeline
-
-```
-Input Image
-    |
-    v
-[1] Convert to grayscale
-    |
-    v
-[2] Detect skew angle (dual algorithm)
-    |
-    v
-[3] Apply rotation (bilinear interpolation, white border)
-    |
-    v
-[4] Auto-crop (dynamic threshold + margin)
-    |
-    v
-Output Image (straight + cropped)
+# With Tesseract OSD support (more accurate rotation detection):
+pip install -e ".[tesseract]"
 ```
 
 ## Usage
 
-### Single Image
-1. Click "Open Image" and select a scanned document
-2. The auto-detected angle is shown in the side panel
-3. Click "Process" to apply correction and crop
-4. Use the slider for manual fine-tuning if needed
-5. Click "Save" to export the result
-
-### Batch Processing
-1. Click "Process Folder" and select a directory
-2. All images are processed in a background thread
-3. Results are saved to a `Processed/` subdirectory
-4. Progress bar and detailed log track each file
-
-### Manual Adjustment
-- **Slider**: Drag to add extra rotation (-15 to +15 degrees)
-- **Nudge buttons**: Fine-tune by 0.5 or 1 degree increments
-- **Reset**: Return to auto-detected angle
-- Preview updates automatically 700ms after the last slider movement
-
-## Supported Formats
-
-| Format | Extension |
-|--------|-----------|
-| PNG | `.png` |
-| JPEG | `.jpg`, `.jpeg` |
-| BMP | `.bmp` |
-| TIFF | `.tiff`, `.tif` |
-
-## Tech Stack
-
-- **OpenCV** — Image processing, skew detection, rotation, cropping
-- **Pillow** — Image display in Tkinter via `ImageTk`
-- **NumPy** — Array operations for pixel analysis
-- **Tkinter** — Native Python GUI (no external GUI framework needed)
-
-## Project Structure
-
-```
-scanner-fixer/
-  scanner_fixer.py        # Main application (GUI + algorithms)
-  requirements.txt        # Python dependencies
-  LICENSE                 # MIT License
-  .gitignore
-  docs/
-    development-chat.md   # Development conversation log (Arabic)
+### Single image
+```bash
+scanner-fixer fix scan.jpg
+scanner-fixer fix scan.jpg --output fixed.jpg --report
+scanner-fixer fix scan.jpg --binarize          # For text-only pages
+scanner-fixer fix scan.jpg --no-rotate         # Skip rotation detection
 ```
 
-## 🏥 Ecosystem Position
-
-Scanner Fixer serves as the **Pre-OCR Normalization Layer** in the [OmniMedical Suite](https://github.com/DrAbdulmalek/omni-medical-suite) ecosystem. By correcting skew and cropping scan artifacts before OCR processing, it directly improves Character Error Rate (CER) and Word Error Rate (WER) across all downstream engines.
-
-**Where it fits in the pipeline:**
-
-```
-Scanned Image → [Scanner Fixer] → De-skewed + Cropped Image → [OCR Engines] → Text Output
+### Batch processing
+```bash
+scanner-fixer batch ./scans/ --output-dir ./fixed/
+scanner-fixer batch ./scans/ --binarize --suffix _ocr
 ```
 
-**Measured impact on quality metrics:**
+### Image info
+```bash
+scanner-fixer info scan.jpg
+```
 
-| Metric | Without Preprocessing | With Scanner Fixer | Improvement |
-|--------|----------------------|--------------------|-------------|
-| Printed CER | ~6-8% | ~3-4% | ~40-50% reduction |
-| Handwritten CER | ~15-18% | ~10-13% | ~25-30% reduction |
-| WER | ~12-15% | ~7-9% | ~35-40% reduction |
+### Python API
+```python
+from scanner_fixer import fix_scan
 
-**Related repositories:**
+result = fix_scan("scan.jpg", output_path="fixed.jpg")
+print(result["report"])
+# {'rotation_applied_deg': 180, 'skew_corrected_deg': 2.5, 'final_size': '2480x3508'}
 
-| Repository | Role |
-|------------|------|
-| [omni-medical-suite](https://github.com/DrAbdulmalek/omni-medical-suite) | Main Platform — integrates preprocessing in pipeline |
-| [medical-ocr-benchmarks](https://github.com/DrAbdulmalek/medical-ocr-benchmarks) | Quality Gates — measures preprocessing impact |
-| [medical-ocr-training-hub](https://github.com/DrAbdulmalek/medical-ocr-training-hub) | Data Loop — ingests preprocessed images |
-| [medical-ocr-ground-truth](https://github.com/DrAbdulmalek/medical-ocr-ground-truth) | Ground Truth — stores validated reference data |
+# From numpy array
+import cv2
+img = cv2.imread("scan.jpg")
+result = fix_scan(img)
+fixed_image = result["image"]
 
-## License
+# Batch
+from scanner_fixer import fix_scan_batch
+from pathlib import Path
 
-MIT — Dr. Abdulmalek Al-Husseini
+results = fix_scan_batch(
+    input_paths=list(Path("./scans").glob("*.jpg")),
+    output_dir="./fixed"
+)
+```
+
+## Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--binarize` | False | Convert to B&W (text-only pages) |
+| `--no-crop` | - | Skip border removal |
+| `--no-rotate` | - | Skip 180° rotation detection |
+| `--no-deskew` | - | Skip tilt correction |
+| `--no-enhance` | - | Skip contrast/denoise |
+| `--deskew-method` | hough | `hough` or `projection` |
+| `--use-tesseract` | False | Tesseract OSD for rotation |
+| `--report` | False | Print JSON processing report |
+
+## Pipeline control
+
+```python
+result = fix_scan(
+    "scan.jpg",
+    do_crop=True,
+    do_rotate=True,
+    do_deskew=True,
+    do_enhance=True,
+    binarize=False,          # True for text-only
+    target_dpi=300,          # Upsample if below 300 DPI
+    use_tesseract_osd=False, # More accurate but requires pytesseract
+    deskew_method="hough",   # "hough" or "projection"
+    crop_padding=10,
+)
+```
+
+## Run tests
+
+```bash
+pip install -e ".[dev]"
+pytest tests/ -v
+```
+
+## Integration with omni-medical-suite
+
+```python
+# In omni-medical-suite core/pipeline.py:
+from scanner_fixer import fix_scan
+
+def process_document(image_path, config):
+    if config.preprocessing.scanner_fixer.enabled:
+        result = fix_scan(image_path)
+        image = result["image"]
+    # ... continue with OCR
+```
