@@ -20,7 +20,7 @@ def fix_scan(
     output_path: Optional[Union[str, Path]] = None,
     # Pipeline control
     do_crop: bool = True,
-    do_rotate: bool = True,
+    do_rotate: bool = False,
     do_deskew: bool = True,
     do_enhance: bool = True,
     # Enhancement options
@@ -45,7 +45,8 @@ def fix_scan(
         input_path: Path to image file, or numpy array (BGR)
         output_path: Where to save result. If None, result returned only in dict.
         do_crop: Enable border cropping
-        do_rotate: Enable 180° rotation detection
+        do_rotate: Enable 180° rotation detection (default: False — heuristic is
+                   unreliable; enable explicitly or use_tesseract_osd=True)
         do_deskew: Enable skew correction
         do_enhance: Enable OCR enhancement
         binarize: Convert to B&W (good for text-only pages)
@@ -100,9 +101,10 @@ def fix_scan(
 
     # ─── Step 3: Deskew ──────────────────────────────────────────────────────
     if do_deskew:
-        image, skew_angle = deskew(image, method=deskew_method)
+        image, skew_angle, deskew_meta = deskew(image, method=deskew_method)
         steps["deskewed"] = image.copy()
         report["skew_corrected_deg"] = round(skew_angle, 2)
+        report["deskew_meta"] = deskew_meta
 
     # ─── Step 4: Enhance ────────────────────────────────────────────────────
     if do_enhance:

@@ -96,14 +96,17 @@ class TestDeskew:
         M = cv2.getRotationMatrix2D((w // 2, h // 2), 5.0, 1.0)
         rotated = cv2.warpAffine(img, M, (w, h), borderValue=(255, 255, 255))
 
-        angle = detect_skew_angle(rotated)
+        angle, meta = detect_skew_angle(rotated)
         # Should detect roughly 5 degrees (±3 degrees tolerance)
         assert abs(abs(angle) - 5.0) < 3.0
+        assert "angles_std" in meta
+        assert "uncertain" in meta
 
     def test_straight_image_near_zero(self):
         img = make_text_page()
-        angle = detect_skew_angle(img)
+        angle, meta = detect_skew_angle(img)
         assert abs(angle) < 2.0
+        assert isinstance(meta, dict)
 
     def test_deskew_output_shape(self):
         img = make_text_page()
@@ -111,13 +114,15 @@ class TestDeskew:
         M = cv2.getRotationMatrix2D((w // 2, h // 2), 3.0, 1.0)
         rotated = cv2.warpAffine(img, M, (w, h), borderValue=(255, 255, 255))
 
-        result, angle = deskew(rotated)
+        result, angle, meta = deskew(rotated)
         assert result.shape[:2] == img.shape[:2]
+        assert isinstance(meta, dict)
 
     def test_deskew_returns_angle(self):
         img = make_text_page()
-        _, angle = deskew(img)
+        _, angle, meta = deskew(img)
         assert isinstance(angle, float)
+        assert isinstance(meta, dict)
 
 
 # ─── Rotate tests ────────────────────────────────────────────────────────────
@@ -191,7 +196,7 @@ class TestPipeline:
 
     def test_fix_scan_report_has_keys(self):
         img = make_text_page()
-        result = fix_scan(img)
+        result = fix_scan(img, do_rotate=True)
         r = result["report"]
         assert "rotation_applied_deg" in r
         assert "skew_corrected_deg" in r
