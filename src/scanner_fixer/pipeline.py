@@ -137,6 +137,7 @@ def fix_scan_batch(
     input_paths: List[Union[str, Path]],
     output_dir: Union[str, Path],
     suffix: str = "_fixed",
+    quiet: bool = False,
     **kwargs
 ) -> List[Dict[str, Any]]:
     """
@@ -146,6 +147,8 @@ def fix_scan_batch(
         input_paths: List of image file paths
         output_dir: Directory for processed images
         suffix: Appended to filename before extension (e.g. "scan_fixed.png")
+        quiet: Suppress per-image progress prints (used when the caller
+               captures machine-readable output, e.g. CLI --json mode)
         **kwargs: Passed to fix_scan()
 
     Returns:
@@ -172,7 +175,8 @@ def fix_scan_batch(
             }
 
         results.append(result)
-        print(f"[{'OK' if result['status'] == 'ok' else 'ERROR'}] {path.name}")
+        if not quiet:
+            print(f"[{'OK' if result['status'] == 'ok' else 'ERROR'}] {path.name}")
 
     return results
 
